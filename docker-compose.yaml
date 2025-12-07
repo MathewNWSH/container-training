@@ -49,6 +49,9 @@ services:
     environment:
       - SB_catalogUrl=http://localhost:8082/
       - SB_catalogTitle="My First Stac"
+
+  eometadatatool:
+    image: ghcr.io/mathewnwsh/eometadatatool:1bfe0af
 #   caddy:
 #     image: caddy:2
 #     restart: unless-stopped
