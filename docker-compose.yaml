@@ -20,15 +20,18 @@ services:
       - GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR
       - DB_MIN_CONN_SIZE=1
       - DB_MAX_CONN_SIZE=1
-      - STAC FASTAPI_TITLE=AGH
-      - STAC FASTAPI_DESCRIPTION=AGH
+      - STAC_FASTAPI_TITLE=AGH
+      - STAC_FASTAPI_DESCRIPTION=AGH
       - STAC_FASTAPI_LANDING_ID=AGH
       - STAC_FASTAPI_VERSION=AGH
       - USE_API_HYDRATE=true
-
+    ports:
+      - "8082:8082"
     depends_on:
       - database
-    command: bash -c "./scripts/wait-for-it.sh database:5432 && python -m stac_fastapi.pgstac.app"
+    command: >
+      bash -c "./scripts/wait-for-it.sh database:5432 &&
+               python -m stac_fastapi.pgstac.app"
 
   database:
     image: ghcr.io/stac-utils/pgstac:v0.9.1
@@ -48,35 +51,66 @@ services:
     image: ghcr.io/radiantearth/stac-browser:latest
     environment:
       - SB_catalogUrl=http://localhost:8082/
-      - SB_catalogTitle="My First Stac"
+      - SB_catalogTitle=My First Stac
+    depends_on:
+      - app
+    ports:
+      - "8080:8080"
+
+  s3-fetcher:
+    image: python:3.13-slim
+    restart: "no"
+    env_file: .default.env
+    volumes:
+      - ./scripts/s3_fetcher.sh:/usr/local/bin/s3_fetcher.sh:ro
+      - ./eometadatatool_data:/work
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e;
+        apt-get update;
+        apt-get install -y --no-install-recommends curl jq ca-certificates;
+        /usr/local/bin/s3_fetcher.sh
+    depends_on:
+      database:
+        condition: service_started
 
   eometadatatool:
     image: ghcr.io/mathewnwsh/eometadatatool:1bfe0af
-#   caddy:
-#     image: caddy:2
-#     restart: unless-stopped
-#     cap_add:
-#       - NET_ADMIN
-#     depends_on:
-#       - app
-#       - browser
-#     ports:
-#       - "80:80"
-#       - "443:443"
-#       - "443:443/udp"
-#     configs:
-#       - source: caddyfile
-#         target: /etc/caddy/Caddyfile
-#     volumes:
-#       - ./caddy_data:/data
-#       - ./caddy_config:/config
+    restart: "no"
+    env_file: .default.env
+    volumes:
+      - ./eometadatatool_data:/work
+      - ./collection-sentinel-2-l1c.json:/collection-sentinel-2-l1c.json:ro
+    command: |
+      metadata_extract --scenes-file /work/s3_paths.txt --out-pattern /work/result.json --ndjson 10000
+    depends_on:
+      database:
+        condition: service_started
+      s3-fetcher:
+        condition: service_completed_successfully
 
-# configs:
-#   caddyfile:
-#     content: |
-#       stac.bosnia.marcys.dev {
-#           reverse_proxy app:8082
-#       }
-
-#       browser.bosnia.marcys.dev {
-#           reverse_proxy browser:8080
+  stac-loader:
+    image: python:3.13-slim
+    restart: "no"
+    env_file: .default.env
+    environment:
+      - PGHOST=database
+    volumes:
+      - ./collection-sentinel-2-l1c.json:/collection-sentinel-2-l1c.json:ro
+      - ./eometadatatool_data:/work
+    command:
+      - /bin/sh
+      - -c
+      - |
+        apt-get update;
+        python -m pip install --no-cache-dir pypgstac[psycopg];
+        while [ ! -s /work/result.json.1 ]; do
+          sleep 1;
+        done;
+        pypgstac load collections /collection-sentinel-2-l1c.json --method upsert;
+        pypgstac load items /work/result.json.1 --method upsert
+    depends_on:
+      eometadatatool:
+        condition: service_completed_successfully
