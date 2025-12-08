@@ -62,7 +62,6 @@ services:
     restart: "no"
     env_file: .default.env
     volumes:
-      - ./scripts/s3_fetcher.sh:/usr/local/bin/s3_fetcher.sh:ro
       - ./eometadatatool_data:/work
     command:
       - /bin/sh
@@ -71,7 +70,13 @@ services:
         set -e;
         apt-get update;
         apt-get install -y --no-install-recommends curl jq ca-certificates;
-        /usr/local/bin/s3_fetcher.sh
+        echo "Fetching S3 paths..."
+        curl -fsSL "$$EODATA_QUERY_URL" | jq -r '.value[]?.S3Path // empty' | sort -u > /work/s3_paths.txt
+        if [ ! -s /work/s3_paths.txt ]; then
+          echo "Error: No S3 paths found.";
+          exit 1;
+        fi
+        echo "Saved $(wc -l < /work/s3_paths.txt) paths to /work/s3_paths.txt"
     depends_on:
       database:
         condition: service_started
